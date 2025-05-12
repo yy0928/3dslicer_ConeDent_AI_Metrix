@@ -33,7 +33,7 @@ class TMambaSeg(ScriptedLoadableModule):
 
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
-        self.parent.title = _("TMambaSeg")  # TODO: make this more human readable by adding spaces
+        self.parent.title = _("ConeDent AI Metrix")  # TODO: make this more human readable by adding spaces
         # TODO: set categories (folders where the module shows up in the module selector)
         self.parent.categories = [translate("qSlicerAbstractCoreModule", "Examples")]
         self.parent.dependencies = []  # TODO: add here list of module names that this module requires
@@ -151,7 +151,7 @@ class TMambaSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         ScriptedLoadableModuleWidget.setup(self)
 
         # 界面布局
-        self.layout.addWidget(qt.QLabel("T-Mamba Segmentation Plugin"))
+        # self.layout.addWidget(qt.QLabel("T-Mamba Segmentation Plugin"))
 
         # 输入文件选择
         self.inputFileButton = qt.QPushButton("选择输入文件")
@@ -167,6 +167,10 @@ class TMambaSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.applyButton = qt.QPushButton("运行推理")
         self.applyButton.clicked.connect(self.onApplyButton)
         self.layout.addWidget(self.applyButton)
+
+        self.progressBar = qt.QProgressBar()
+        self.progressBar.setRange(0, 100)
+        self.layout.addWidget(self.progressBar)  # 插入到日志框上方
 
         # 日志显示
         self.logText = qt.QTextEdit()
@@ -267,31 +271,63 @@ class TMambaSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 return  # 提前退出，避免后续错误
 
             # 4. 确保激活 conda 环境并运行推理脚本
-            result = subprocess.run(
+            import re
+
+            # 创建带缓冲的进程对象
+            process = subprocess.Popen(
                 ["wsl", "bash", "-c",
-                 "source /home/pc/anaconda3/etc/profile.d/conda.sh && conda activate cbct && cd /mnt/d/AIbot/DentalCTSeg-main/T-Mamba && bash ./infer.sh '{}' '{}'".format(
-                     wsl_input_file, wsl_output_dir)
-                 ],
-                capture_output=True,
+                 f"source /home/pc/anaconda3/etc/profile.d/conda.sh && "
+                 f"conda activate cbct && "
+                 f"cd /mnt/d/AIbot/DentalCTSeg-main/T-Mamba && "
+                 f"PYTHONUNBUFFERED=1 bash ./infer.sh '{wsl_input_file}' '{wsl_output_dir}'"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                timeout=600,
-                encoding="utf-8",
-                errors="replace",
-                check=False
+                bufsize=1,  # 行缓冲模式（关键参数）
+                encoding='utf-8',
+                errors='replace'
             )
 
-            # 处理输出和错误
-            if result.returncode == 0:
-                log_widget.append("脚本执行成功")
-                if result.stdout:
-                    log_widget.append("脚本输出:")
-                    log_widget.append(result.stdout)
-            else:
-                log_widget.append(f"脚本执行失败，返回码: {result.returncode}")
-                if result.stderr:
-                    log_widget.append("错误信息:")
-                    log_widget.append(result.stderr)
-                return  # 提前退出，避免后续错误
+            # 实时处理输出流
+            tqdm_pattern = re.compile(r"(\d+)%\|")  # 匹配tqdm进度格式
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+
+                # 解析进度条（示例匹配：' 0%|...'）
+                if match := tqdm_pattern.search(line):
+                    percent = int(match.group(1))
+                    if hasattr(self, 'progressBar'):  # 确保已初始化进度条控件
+                        self.progressBar.setValue(percent)
+                else:
+                    # 只显示非进度信息的日志
+                    clean_line = line.replace('\r', '').replace('\x1b[?25l', '').strip()
+                    if clean_line:
+                        log_widget.append(clean_line)
+                        log_widget.ensureCursorVisible()  # 自动滚动
+
+                qt.QApplication.processEvents()  # 保持UI响应
+
+            # # 获取最终结果
+            # return_code = process.poll()
+            # if return_code == 0:
+            #     log_widget.append("脚本执行成功")
+            # else:
+            #     log_widget.append(f"脚本执行失败，返回码: {return_code}")
+            #
+            # # 处理输出和错误
+            # if result.returncode == 0:
+            #     log_widget.append("脚本执行成功")
+            #     if result.stdout:
+            #         log_widget.append("脚本输出:")
+            #         log_widget.append(result.stdout)
+            # else:
+            #     log_widget.append(f"脚本执行失败，返回码: {result.returncode}")
+            #     if result.stderr:
+            #         log_widget.append("错误信息:")
+            #         log_widget.append(result.stderr)
+            #     return  # 提前退出，避免后续错误
 
             # 5. 加载结果文件（注意转换回 Windows 路径）
             output_files = subprocess.run(
