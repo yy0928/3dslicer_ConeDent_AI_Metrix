@@ -179,42 +179,6 @@ class TMambaSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.layout.addStretch(1)
 
-    def onInputFileButtonClicked(self):
-        file_dialog = qt.QFileDialog()
-        file_dialog.setFileMode(qt.QFileDialog.ExistingFiles)
-        file_dialog.setNameFilter("NIfTI Files (*.nii *.nii.gz);;All Files (*)")
-
-        if file_dialog.exec_():
-            input_file = file_dialog.selectedFiles()[0]
-
-            if not hasattr(self, '_parameterNode') or self._parameterNode is None:
-                self._parameterNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScriptedModuleNode")
-
-            self._parameterNode.SetParameter("inputFile", input_file)
-            slicer.util.infoDisplay(f"Input file selected: {input_file}")
-            print(f"Input file set: {input_file}")
-
-
-            loadedNode = slicer.util.loadVolume(input_file)
-            if loadedNode:
-                print("Volume loaded and displayed.")
-            else:
-                print("Failed to load volume.")
-
-    def onOutputDirButtonClicked(self):
-        dir_dialog = qt.QFileDialog()
-        dir_dialog.setFileMode(qt.QFileDialog.Directory)
-        if dir_dialog.exec_():
-            output_dir = dir_dialog.selectedFiles()[0]
-            if not hasattr(self, '_parameterNode') or self._parameterNode is None:
-                self._parameterNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScriptedModuleNode")
-            self._parameterNode.SetParameter("outputDir", output_dir)
-            self.logText.append(f"已选择输出目录: {output_dir}")
-            print(f"Output directory set: {output_dir}")
-        else:
-            slicer.util.errorDisplay("No output directory selected.")
-            print("No output directory selected.")
-
     def runInference(self, input_file: str, output_dir: str, log_widget: qt.QTextEdit) -> None:
         try:
             # 1. 预处理路径：替换反斜杠为斜杠
@@ -257,112 +221,8 @@ class TMambaSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             log_widget.append(f"WSL 输出目录: {wsl_output_dir}")
 
             # 3. 检查脚本是否存在并具有执行权限
-            check_script = subprocess.run(
-                ["wsl", "test", "-f", wsl_script_path, "&&", "test", "-x", wsl_script_path],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace"
-            )
-            if check_script.returncode != 0:
-                log_widget.append(f"脚本检查失败: {wsl_script_path} 不存在或不可执行")
-                if check_script.stderr:
-                    log_widget.append(f"错误信息: {check_script.stderr}")
-                return  # 提前退出，避免后续错误
 
-            # 4. 确保激活 conda 环境并运行推理脚本
-            import re
 
-            # 创建带缓冲的进程对象
-            process = subprocess.Popen(
-                ["wsl", "bash", "-c",
-                 f"source /home/pc/anaconda3/etc/profile.d/conda.sh && "
-                 f"conda activate cbct && "
-                 f"cd /mnt/d/AIbot/DentalCTSeg-main/T-Mamba && "
-                 f"PYTHONUNBUFFERED=1 bash ./infer.sh '{wsl_input_file}' '{wsl_output_dir}'"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,  # 行缓冲模式（关键参数）
-                encoding='utf-8',
-                errors='replace'
-            )
-
-            # 实时处理输出流
-            tqdm_pattern = re.compile(r"(\d+)%\|")  # 匹配tqdm进度格式
-            while True:
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
-                    break
-
-                # 解析进度条（示例匹配：' 0%|...'）
-                if match := tqdm_pattern.search(line):
-                    percent = int(match.group(1))
-                    if hasattr(self, 'progressBar'):  # 确保已初始化进度条控件
-                        self.progressBar.setValue(percent)
-                else:
-                    # 只显示非进度信息的日志
-                    clean_line = line.replace('\r', '').replace('\x1b[?25l', '').strip()
-                    if clean_line:
-                        log_widget.append(clean_line)
-                        log_widget.ensureCursorVisible()  # 自动滚动
-
-                qt.QApplication.processEvents()  # 保持UI响应
-
-            # # 获取最终结果
-            # return_code = process.poll()
-            # if return_code == 0:
-            #     log_widget.append("脚本执行成功")
-            # else:
-            #     log_widget.append(f"脚本执行失败，返回码: {return_code}")
-            #
-            # # 处理输出和错误
-            # if result.returncode == 0:
-            #     log_widget.append("脚本执行成功")
-            #     if result.stdout:
-            #         log_widget.append("脚本输出:")
-            #         log_widget.append(result.stdout)
-            # else:
-            #     log_widget.append(f"脚本执行失败，返回码: {result.returncode}")
-            #     if result.stderr:
-            #         log_widget.append("错误信息:")
-            #         log_widget.append(result.stderr)
-            #     return  # 提前退出，避免后续错误
-
-            # 5. 加载结果文件（注意转换回 Windows 路径）
-            output_files = subprocess.run(
-                ["wsl", "find", wsl_output_dir, "-name", "*_seg.nii.gz"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=True
-            ).stdout.splitlines()
-            if output_files:
-                latest_file = output_files[-1]
-                # 将 WSL 路径转回 Windows 路径以便加载
-                win_output_file = subprocess.run(
-                    ["wsl", "wslpath", "-w", latest_file.strip()],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    check=True
-                ).stdout.strip()
-                print(win_output_file)
-                slicer.util.loadVolume(win_output_file)
-                log_widget.append(f"加载结果: {win_output_file}")
-            else:
-                log_widget.append("未找到输出文件")
-
-        except subprocess.CalledProcessError as e:
-            log_widget.append(f"路径转换或命令执行失败: {str(e)}")
-            if e.stderr:
-                log_widget.append(f"错误信息: {e.stderr}")
-        except subprocess.TimeoutExpired:
-            log_widget.append("脚本执行超时")
-        except Exception as e:
-            log_widget.append(f"未知错误: {str(e)}")
 
     def onApplyButton(self):
         """处理应用按钮点击"""
