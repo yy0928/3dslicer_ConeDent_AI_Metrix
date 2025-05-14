@@ -153,6 +153,67 @@ class TMambaSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # 界面布局
         # self.layout.addWidget(qt.QLabel("T-Mamba Segmentation Plugin"))
 
+        # 输入文件选择
+        self.inputFileButton = qt.QPushButton("选择输入文件")
+        self.inputFileButton.clicked.connect(self.onInputFileButtonClicked)
+        self.layout.addWidget(self.inputFileButton)
+
+        # 输出目录选择
+        self.outputDirButton = qt.QPushButton("选择输出目录")
+        self.outputDirButton.clicked.connect(self.onOutputDirButtonClicked)
+        self.layout.addWidget(self.outputDirButton)
+
+        # 运行按钮
+        self.applyButton = qt.QPushButton("运行推理")
+        self.applyButton.clicked.connect(self.onApplyButton)
+        self.layout.addWidget(self.applyButton)
+
+        self.progressBar = qt.QProgressBar()
+        self.progressBar.setRange(0, 100)
+        self.layout.addWidget(self.progressBar)  # 插入到日志框上方
+
+        # 日志显示
+        self.logText = qt.QTextEdit()
+        self.logText.setReadOnly(True)
+        self.layout.addWidget(self.logText)
+
+        self.layout.addStretch(1)
+
+    def onInputFileButtonClicked(self):
+        file_dialog = qt.QFileDialog()
+        file_dialog.setFileMode(qt.QFileDialog.ExistingFiles)
+        file_dialog.setNameFilter("NIfTI Files (*.nii *.nii.gz);;All Files (*)")
+
+        if file_dialog.exec_():
+            input_file = file_dialog.selectedFiles()[0]
+
+            if not hasattr(self, '_parameterNode') or self._parameterNode is None:
+                self._parameterNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScriptedModuleNode")
+
+            self._parameterNode.SetParameter("inputFile", input_file)
+            slicer.util.infoDisplay(f"Input file selected: {input_file}")
+            print(f"Input file set: {input_file}")
+
+
+            loadedNode = slicer.util.loadVolume(input_file)
+            if loadedNode:
+                print("Volume loaded and displayed.")
+            else:
+                print("Failed to load volume.")
+
+    def onOutputDirButtonClicked(self):
+        dir_dialog = qt.QFileDialog()
+        dir_dialog.setFileMode(qt.QFileDialog.Directory)
+        if dir_dialog.exec_():
+            output_dir = dir_dialog.selectedFiles()[0]
+            if not hasattr(self, '_parameterNode') or self._parameterNode is None:
+                self._parameterNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScriptedModuleNode")
+            self._parameterNode.SetParameter("outputDir", output_dir)
+            self.logText.append(f"已选择输出目录: {output_dir}")
+            print(f"Output directory set: {output_dir}")
+        else:
+            slicer.util.errorDisplay("No output directory selected.")
+            print("No output directory selected.")
 
     def runInference(self, input_file: str, output_dir: str, log_widget: qt.QTextEdit) -> None:
         try:
@@ -248,6 +309,82 @@ class TMambaSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
                 qt.QApplication.processEvents()  # 保持UI响应
 
+            output_files = subprocess.run(
+                ["wsl", "find", wsl_output_dir, "-name", "*_seg.nii.gz"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=True
+            ).stdout.splitlines()
+            if output_files:
+                latest_file = output_files[-1]
+                # 将 WSL 路径转回 Windows 路径以便加载
+                win_output_file = subprocess.run(
+                    ["wsl", "wslpath", "-w", latest_file.strip()],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=True
+                ).stdout.strip()
+                print(f"加载分割结果文件: {win_output_file}")
+                log_widget.append(f"加载分割结果文件: {win_output_file}")
+                
+                # 确保清除之前的加载
+                slicer.mrmlScene.Clear(0)  # 不保存场景
+                
+                # 重新加载原始输入体积
+                originalVolume = slicer.util.loadVolume(input_file)
+                
+                # 加载分割结果体积
+                segVolume = slicer.util.loadVolume(win_output_file)
+                
+                if segVolume:
+                    log_widget.append("分割结果加载成功，正在设置体积渲染...")
+                    
+                    # 打开体积渲染模块
+                    slicer.util.selectModule('VolumeRendering')
+                    
+                    # 获取体积渲染逻辑
+                    volRenLogic = slicer.modules.volumerendering.logic()
+                    
+                    # 为分割结果创建体积渲染显示节点
+                    displayNode = volRenLogic.CreateVolumeRenderingDisplayNode()
+                    displayNode.SetVisibility(True)
+                    slicer.mrmlScene.AddNode(displayNode)
+                    segVolume.AddAndObserveDisplayNodeID(displayNode.GetID())
+                    
+                    # 更新显示节点
+                    volRenLogic.UpdateDisplayNodeFromVolumeNode(displayNode, segVolume)
+                    
+                    # 应用预设
+                    presetName = "CT-Bone"
+                    volRenLogic.SetPresetForNode(displayNode, presetName)
+                    
+                    # 设置布局为3D视图
+                    layoutManager = slicer.app.layoutManager()
+                    layoutManager.setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView)
+                    
+                    # 重置3D视图
+                    threeDView = layoutManager.threeDWidget(0).threeDView()
+                    threeDView.resetFocalPoint()
+                    threeDView.resetCamera()
+                    
+                    log_widget.append(f"已应用体积渲染预设: {presetName}")
+                else:
+                    log_widget.append("分割结果加载失败")
+            else:
+                log_widget.append("未找到输出文件")
+
+        except subprocess.CalledProcessError as e:
+            log_widget.append(f"路径转换或命令执行失败: {str(e)}")
+            if e.stderr:
+                log_widget.append(f"错误信息: {e.stderr}")
+        except subprocess.TimeoutExpired:
+            log_widget.append("脚本执行超时")
+        except Exception as e:
+            log_widget.append(f"未知错误: {str(e)}")
 
     def onApplyButton(self):
         """处理应用按钮点击"""
