@@ -309,27 +309,6 @@ class TMambaSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
                 qt.QApplication.processEvents()  # 保持UI响应
 
-            # # 获取最终结果
-            # return_code = process.poll()
-            # if return_code == 0:
-            #     log_widget.append("脚本执行成功")
-            # else:
-            #     log_widget.append(f"脚本执行失败，返回码: {return_code}")
-            #
-            # # 处理输出和错误
-            # if result.returncode == 0:
-            #     log_widget.append("脚本执行成功")
-            #     if result.stdout:
-            #         log_widget.append("脚本输出:")
-            #         log_widget.append(result.stdout)
-            # else:
-            #     log_widget.append(f"脚本执行失败，返回码: {result.returncode}")
-            #     if result.stderr:
-            #         log_widget.append("错误信息:")
-            #         log_widget.append(result.stderr)
-            #     return  # 提前退出，避免后续错误
-
-            # 5. 加载结果文件（注意转换回 Windows 路径）
             output_files = subprocess.run(
                 ["wsl", "find", wsl_output_dir, "-name", "*_seg.nii.gz"],
                 capture_output=True,
@@ -349,9 +328,52 @@ class TMambaSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     errors="replace",
                     check=True
                 ).stdout.strip()
-                print(win_output_file)
-                slicer.util.loadVolume(win_output_file)
-                log_widget.append(f"加载结果: {win_output_file}")
+                print(f"加载分割结果文件: {win_output_file}")
+                log_widget.append(f"加载分割结果文件: {win_output_file}")
+                
+                # 确保清除之前的加载
+                slicer.mrmlScene.Clear(0)  # 不保存场景
+                
+                # 重新加载原始输入体积
+                originalVolume = slicer.util.loadVolume(input_file)
+                
+                # 加载分割结果体积
+                segVolume = slicer.util.loadVolume(win_output_file)
+                
+                if segVolume:
+                    log_widget.append("分割结果加载成功，正在设置体积渲染...")
+                    
+                    # 打开体积渲染模块
+                    slicer.util.selectModule('VolumeRendering')
+                    
+                    # 获取体积渲染逻辑
+                    volRenLogic = slicer.modules.volumerendering.logic()
+                    
+                    # 为分割结果创建体积渲染显示节点
+                    displayNode = volRenLogic.CreateVolumeRenderingDisplayNode()
+                    displayNode.SetVisibility(True)
+                    slicer.mrmlScene.AddNode(displayNode)
+                    segVolume.AddAndObserveDisplayNodeID(displayNode.GetID())
+                    
+                    # 更新显示节点
+                    volRenLogic.UpdateDisplayNodeFromVolumeNode(displayNode, segVolume)
+                    
+                    # 应用预设
+                    presetName = "CT-Bone"
+                    volRenLogic.SetPresetForNode(displayNode, presetName)
+                    
+                    # 设置布局为3D视图
+                    layoutManager = slicer.app.layoutManager()
+                    layoutManager.setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView)
+                    
+                    # 重置3D视图
+                    threeDView = layoutManager.threeDWidget(0).threeDView()
+                    threeDView.resetFocalPoint()
+                    threeDView.resetCamera()
+                    
+                    log_widget.append(f"已应用体积渲染预设: {presetName}")
+                else:
+                    log_widget.append("分割结果加载失败")
             else:
                 log_widget.append("未找到输出文件")
 
