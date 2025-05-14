@@ -153,31 +153,6 @@ class TMambaSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # 界面布局
         # self.layout.addWidget(qt.QLabel("T-Mamba Segmentation Plugin"))
 
-        # 输入文件选择
-        self.inputFileButton = qt.QPushButton("选择输入文件")
-        self.inputFileButton.clicked.connect(self.onInputFileButtonClicked)
-        self.layout.addWidget(self.inputFileButton)
-
-        # 输出目录选择
-        self.outputDirButton = qt.QPushButton("选择输出目录")
-        self.outputDirButton.clicked.connect(self.onOutputDirButtonClicked)
-        self.layout.addWidget(self.outputDirButton)
-
-        # 运行按钮
-        self.applyButton = qt.QPushButton("运行推理")
-        self.applyButton.clicked.connect(self.onApplyButton)
-        self.layout.addWidget(self.applyButton)
-
-        self.progressBar = qt.QProgressBar()
-        self.progressBar.setRange(0, 100)
-        self.layout.addWidget(self.progressBar)  # 插入到日志框上方
-
-        # 日志显示
-        self.logText = qt.QTextEdit()
-        self.logText.setReadOnly(True)
-        self.layout.addWidget(self.logText)
-
-        self.layout.addStretch(1)
 
     def runInference(self, input_file: str, output_dir: str, log_widget: qt.QTextEdit) -> None:
         try:
@@ -221,7 +196,57 @@ class TMambaSegWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             log_widget.append(f"WSL 输出目录: {wsl_output_dir}")
 
             # 3. 检查脚本是否存在并具有执行权限
+            check_script = subprocess.run(
+                ["wsl", "test", "-f", wsl_script_path, "&&", "test", "-x", wsl_script_path],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
+            if check_script.returncode != 0:
+                log_widget.append(f"脚本检查失败: {wsl_script_path} 不存在或不可执行")
+                if check_script.stderr:
+                    log_widget.append(f"错误信息: {check_script.stderr}")
+                return  # 提前退出，避免后续错误
 
+            # 4. 确保激活 conda 环境并运行推理脚本
+            import re
+
+            # 创建带缓冲的进程对象
+            process = subprocess.Popen(
+                ["wsl", "bash", "-c",
+                 f"source /home/pc/anaconda3/etc/profile.d/conda.sh && "
+                 f"conda activate cbct && "
+                 f"cd /mnt/d/AIbot/DentalCTSeg-main/T-Mamba && "
+                 f"PYTHONUNBUFFERED=1 bash ./infer.sh '{wsl_input_file}' '{wsl_output_dir}'"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,  # 行缓冲模式（关键参数）
+                encoding='utf-8',
+                errors='replace'
+            )
+
+            # 实时处理输出流
+            tqdm_pattern = re.compile(r"(\d+)%\|")  # 匹配tqdm进度格式
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+
+                # 解析进度条（示例匹配：' 0%|...'）
+                if match := tqdm_pattern.search(line):
+                    percent = int(match.group(1))
+                    if hasattr(self, 'progressBar'):  # 确保已初始化进度条控件
+                        self.progressBar.setValue(percent)
+                else:
+                    # 只显示非进度信息的日志
+                    clean_line = line.replace('\r', '').replace('\x1b[?25l', '').strip()
+                    if clean_line:
+                        log_widget.append(clean_line)
+                        log_widget.ensureCursorVisible()  # 自动滚动
+
+                qt.QApplication.processEvents()  # 保持UI响应
 
 
     def onApplyButton(self):
